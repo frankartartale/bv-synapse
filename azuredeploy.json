@@ -1,0 +1,251 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "workspaceAndStorageAccount": {
+      "type": "String",
+      "metadata": {
+        "description": "Base name of your storage and workspoace accounts. Will result in stg<name> and ws<wsname> resources."
+      }
+    },
+    "defaultDataLakeStorageFilesystemName": {
+      "defaultValue": "workspace",
+      "type": "String",
+      "metadata": {
+        "description": "Container in Data Lake Storage account that you will use for Synapse Workspace."
+      }
+    },
+    "sqlAdministratorLogin": {
+      "type": "String"
+    },
+    "sqlAdministratorPassword": {
+      "type": "SecureString"
+    },
+    "tagValues": {
+      "defaultValue": {
+        "Created with": "Synapse Azure Resource Manager deploment template"
+      },
+      "type": "Object"
+    },
+     
+    "sku": {
+      "defaultValue": "DW100c",
+      "allowedValues": [
+        "DW100c"
+      ],
+      "type": "String",
+      "metadata": {
+        "description": "Select the SKU of the SQL pool."
+      }
+    },
+    "metadataSync": {
+      "defaultValue": false,
+      "type": "Bool",
+      "metadata": {
+        "description": "Choose whether you want to synchronise metadata."
+      }
+    }
+  },
+  "variables": {
+    "storageBlobDataContributorRoleID": "ba92f5b4-2d11-453d-a403-e96b0029c9fe",
+    "sqlPoolName": "bitvoresql",
+    "sparkPoolName": "bitvorespark",
+    "wsAccountName": "[concat('ws', parameters('workspaceAndStorageAccount'))]",
+    "stgAccountName": "[concat('stg', parameters('workspaceAndStorageAccount'))]",
+    "defaultDataLakeStorageAccountUrl": "[concat('https://', variables('stgAccountName'), '.dfs.core.windows.net')]"
+  },
+  "resources": [
+  {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2019-04-01",
+      "name": "[variables('stgAccountName')]",
+      "location": "[resourceGroup().location]",
+      "tags": {
+        "Type": "Synapse Data Lake Storage",
+        "Created with": "Synapse Azure Resource Manager deploment template"
+      },
+      "sku": {
+        "name": "Standard_RAGRS",
+        "tier": "Standard"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "isHnsEnabled": true,
+        "networkAcls": {
+          "bypass": "AzureServices",
+          "virtualNetworkRules": [],
+          "ipRules": [],
+          "defaultAction": "Allow"
+        },
+        "supportsHttpsTrafficOnly": true,
+        "encryption": {
+          "services": {
+            "file": {
+              "enabled": true
+            },
+            "blob": {
+              "enabled": true
+            }
+          },
+          "keySource": "Microsoft.Storage"
+        },
+        "accessTier": "Hot"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2019-04-01",
+      "name": "[concat(variables('stgAccountName'), '/default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stgAccountName'))]"
+      ],
+      "properties": {
+        "cors": {
+          "corsRules": []
+        },
+        "deleteRetentionPolicy": {
+          "enabled": false
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2019-04-01",
+      "name": "[concat(variables('stgAccountName'), '/default/workspace')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('stgAccountName'), 'default')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stgAccountName'))]"
+      ],
+      "properties": {
+        "publicAccess": "None"
+      }
+    },
+    {
+      "type": "Microsoft.Synapse/workspaces",
+      "apiVersion": "2019-06-01-preview",
+      "name": "[variables('wsAccountName')]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('stgAccountName'), 'default')]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('stgAccountName'))]"
+      ],
+      "tags": "[parameters('tagValues')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "defaultDataLakeStorage": {
+          "accountUrl": "[variables('defaultDataLakeStorageAccountUrl')]",
+          "filesystem": "[parameters('defaultDataLakeStorageFilesystemName')]"
+        },
+        "virtualNetworkProfile": {
+          "computeSubnetId": ""
+        },
+        "sqlAdministratorLogin": "[parameters('sqlAdministratorLogin')]",
+        "sqlAdministratorLoginPassword": "[parameters('sqlAdministratorPassword')]"
+      },
+      "resources": [
+        {
+          "type": "firewallrules",
+          "apiVersion": "2019-06-01-preview",
+          "name": "allowAll",
+          "location": "[resourceGroup().location]",
+          "dependsOn": [
+            "[concat('Microsoft.Synapse/workspaces/', variables('wsAccountName'))]"
+          ],
+          "properties": {
+            "startIpAddress": "0.0.0.0",
+            "endIpAddress": "255.255.255.255"
+          }
+        }
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2019-05-01",
+      "name": "storageRoleDeploymentResource",
+      "dependsOn": [
+        "[concat('Microsoft.Synapse/workspaces/', variables('wsAccountName'))]"
+      ],
+      "properties": {
+        "mode": "Incremental",
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "parameters": {},
+          "variables": {},
+          "resources": [
+            {
+              "type": "Microsoft.Storage/storageAccounts/blobServices/containers/providers/roleAssignments",
+              "apiVersion": "2018-09-01-preview",
+              "name": "[concat(variables('stgAccountName'), '/default/', parameters('defaultDataLakeStorageFilesystemName'), '/Microsoft.Authorization/',  guid(concat(resourceGroup().id, '/', variables('storageBlobDataContributorRoleID'), '/', variables('wsAccountName'))))]",
+              "location": "[resourceGroup().location]",
+              "properties": {
+                "roleDefinitionId": "[resourceId('Microsoft.Authorization/roleDefinitions', variables('storageBlobDataContributorRoleID'))]",
+                "principalId": "[reference(concat('Microsoft.Synapse/workspaces/', variables('wsAccountName')), '2019-06-01-preview', 'Full').identity.principalId]",
+                "principalType": "ServicePrincipal"
+              }
+            }
+          ]
+        }
+      },
+      "subscriptionId": "[subscription().subscriptionId]",
+      "resourceGroup": "[resourceGroup().name]"
+    },
+    {
+      "type": "Microsoft.Synapse/workspaces/sqlPools",
+      "apiVersion": "2019-06-01-preview",
+      "name": "[concat(variables('wsAccountName'), '/', variables('sqlPoolName'))]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[variables('wsAccountName')]"
+      ],
+      "sku": {
+        "name": "[parameters('sku')]"
+      },
+      "properties": {
+        "createMode": "Default",
+        "collation": "SQL_Latin1_General_CP1_CI_AS"
+      },
+      "resources": [
+        {
+          "type": "metadataSync",
+          "apiVersion": "2019-06-01-preview",
+          "name": "config",
+          "location": "[resourceGroup().location]",
+          "dependsOn": [
+            "[variables('sqlPoolName')]"
+          ],
+          "properties": {
+            "Enabled": "[parameters('metadataSync')]"
+          },
+          "condition": "[parameters('metadataSync')]"
+        }
+      ]
+    },
+    {
+      "type": "Microsoft.Synapse/workspaces/bigDataPools",
+      "apiVersion": "2019-06-01-preview",
+      "name": "[concat(variables('wsAccountName'), '/', variables('sparkPoolName'))]",
+      "location": "[resourceGroup().location]",
+      "dependsOn": [
+        "[variables('wsAccountName')]"
+      ],
+      "properties": {
+        "nodeCount": 5,
+        "nodeSizeFamily": "MemoryOptimized",
+        "nodeSize": "Medium",
+        "autoScale": {
+          "enabled": true,
+          "minNodeCount": 3,
+          "maxNodeCount": 40
+        },
+        "autoPause": {
+          "enabled": true,
+          "delayInMinutes": 15
+        },
+        "sparkVersion": "2.4"
+      }
+    }
+  ]
+}
